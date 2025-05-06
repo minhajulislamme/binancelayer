@@ -14,7 +14,7 @@ A professional-grade algorithmic trading bot for Binance Futures, specifically o
 - **Real-time WebSocket Integration**: Low-latency price and order book monitoring
 - **Sophisticated Risk Management**: Volatility-based position sizing and dynamic stop-loss placement
 - **Auto-compounding**: Automatically reinvests profits to grow account size
-- **Advanced Technical Indicators**: 
+- **Advanced Technical Indicators**:
   - Supertrend for trend detection
   - TTM Squeeze for volatility breakouts
   - Multi-timeframe analysis
@@ -91,6 +91,7 @@ python main.py
 ```
 
 The bot will:
+
 1. Send a startup notification
 2. Execute a test trade to verify functionality
 3. Start live trading
@@ -125,7 +126,7 @@ This strategy implements a sophisticated grid trading approach specifically opti
 
 1. **Adaptive Grid Spacing**: Adjusts grid levels based on market volatility
 2. **Trend Detection**: Uses EMA crossovers and Supertrend indicators
-3. **Entry/Exit Conditions**: 
+3. **Entry/Exit Conditions**:
    - Long entries on bullish Supertrend + squeeze release in uptrend
    - Short entries on bearish Supertrend + squeeze release in downtrend
 4. **Position Management**:
