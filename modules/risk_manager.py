@@ -23,15 +23,30 @@ class RiskManager:
         self.initial_balance = None
         self.last_known_balance = None
         self.current_market_condition = None  # Will be set to 'BULLISH', 'BEARISH', or 'SIDEWAYS'
+        self.position_size_multiplier = 1.0  # Default position size multiplier
         
     def set_market_condition(self, market_condition):
         """Set the current market condition for adaptive risk management"""
-        if market_condition in ['BULLISH', 'BEARISH', 'SIDEWAYS']:
+        if market_condition in ['BULLISH', 'BEARISH', 'SIDEWAYS', 'EXTREME_BULLISH', 'EXTREME_BEARISH', 'SQUEEZE']:
             if self.current_market_condition != market_condition:
                 logger.info(f"Market condition changed to {market_condition}")
                 self.current_market_condition = market_condition
         else:
             logger.warning(f"Invalid market condition: {market_condition}. Using default risk parameters.")
+    
+    def update_position_sizing(self, position_size_multiplier):
+        """
+        Update the position size multiplier based on market conditions and volatility
+        
+        Args:
+            position_size_multiplier: A multiplier to adjust position size (0.5 = 50%, 1.0 = 100%, etc.)
+        """
+        if position_size_multiplier <= 0:
+            logger.warning(f"Invalid position size multiplier: {position_size_multiplier}. Using default value of 1.0")
+            position_size_multiplier = 1.0
+            
+        self.position_size_multiplier = position_size_multiplier
+        logger.info(f"Position size multiplier updated to {position_size_multiplier:.2f}")
         
     def calculate_position_size(self, symbol, side, price, stop_loss_price=None):
         """

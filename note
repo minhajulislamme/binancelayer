@@ -123,3 +123,17 @@ python3 main.py --backtest --symbol LAYERUSDT --strategy LayerDynamicGrid
 but i get notification but not place position
 
 --test-trade
+
+
+More sophisticated reversal detection
+
+Volatility-adaptive grid spacing
+
+Multi-indicator confirmation for signals
+
+Fibonacci level integration for better support/resistance
+
+Improved sideways market detection with squeeze alerts
+
+Enhanced momentum filtering for trend confirmation
+

@@ -6,7 +6,7 @@ import signal
 import schedule
 import argparse
 import json
-import traceback
+import traceback 
 from datetime import datetime, timedelta
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -39,7 +39,7 @@ try:
     )
 except ImportError:
     # Default values if not in config
-    BACKTEST_BEFORE_LIVE = True
+    BACKTEST_BEFORE_LIVE = False  # Changed to False to skip backtest by default
     BACKTEST_MIN_PROFIT_PCT = 5.0
     BACKTEST_MIN_WIN_RATE = 50.0
     BACKTEST_PERIOD = "15 days"
@@ -1989,59 +1989,85 @@ def main():
     timeframe = args.timeframe or TIMEFRAME
     strategy_name = args.strategy or STRATEGY
     
-    # Sequential execution flow: Backtest -> Test Trade -> Live Trading
-    
-    # Step 1: Run a backtest first to validate the strategy
-    if not args.skip_validation and BACKTEST_BEFORE_LIVE:
-        logger.info("===== STEP 1: RUNNING STRATEGY VALIDATION BACKTEST =====")
-        is_valid, validation_message = run_safety_backtest(symbol, timeframe, strategy_name)
+    # When running without explicit arguments, always send notification, test a trade, then run bot
+    if not (args.backtest or args.report or args.test_trade):
+        # Step 1: Send startup notification
+        logger.info("===== STEP 1: SENDING STARTUP NOTIFICATION =====")
+        notifier = TelegramNotifier()
+        notifier.send_message(f"🚀 *Trading Bot Initializing*\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Strategy: {strategy_name}\n"
+                            f"Timeframe: {timeframe}\n"
+                            f"Starting Balance: {stats['current_balance']:.2f} USDT\n\n"
+                            f"Starting sequence: Notification → Test Trade → Live Trading")
         
-        if not is_valid:
-            logger.warning(f"Strategy validation failed: {validation_message}")
-            logger.warning("You can override this with --skip-validation flag")
-            
-            # Notify user and wait for confirmation to continue
-            notifier = TelegramNotifier()
-            notifier.send_message(f"⚠️ *Strategy Validation Failed*\n\n"
-                                  f"Symbol: {symbol}\n"
-                                  f"Strategy: {strategy_name}\n"
-                                  f"Reason: {validation_message}\n\n"
-                                  f"Bot will continue anyway as validation is not strict. Add --skip-validation to bypass this check.")
-            
-            logger.warning("Continuing despite strategy validation failure after 5 seconds...")
-            time.sleep(5)  # Brief pause to allow user to see the message
-    else:
-        logger.info("Strategy validation backtest skipped")
-    
-    # Step 2: Perform a test trade to verify API connectivity and permissions
-    if not (args.skip_test_trade or args.small_account):
+        # Step 2: Always run a test trade to verify trading functionality
         logger.info("===== STEP 2: PERFORMING TEST TRADE =====")
         test_trade_success = perform_test_trade(symbol)
         
         if not test_trade_success:
-            logger.error("Test trade failed! Please check API settings and permissions.")
-            logger.error("You can bypass this check with --skip-test-trade flag")
+            logger.warning("Test trade had issues, but continuing with live trading...")
             
-            # Notify user and wait for confirmation to continue
-            notifier = TelegramNotifier()
-            notifier.send_message(f"⚠️ *Test Trade Failed*\n\n"
-                                  f"Symbol: {symbol}\n"
-                                  f"Check API keys, permissions, and account balance.\n\n"
-                                  f"Bot will continue anyway with live trading. Use --skip-test-trade to bypass this check in the future.")
-            
-            logger.warning("Continuing despite test trade failure after 10 seconds...")
-            time.sleep(10)  # Longer pause for test trade issues as they're more serious
+        # Step 3: Start the actual trading bot (skip backtest validation)
+        logger.info("===== STEP 3: STARTING LIVE TRADING BOT =====")
+        notifier.send_message(f"✅ *Trading Bot Started*\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Strategy: {strategy_name}\n"
+                            f"Timeframe: {timeframe}\n"
+                            f"Starting Balance: {stats['current_balance']:.2f} USDT")
     else:
-        logger.info("Test trade skipped")
-    
-    # Step 3: Start the actual trading bot
-    logger.info("===== STEP 3: STARTING LIVE TRADING BOT =====")
-    notifier = TelegramNotifier()
-    notifier.send_message(f"🚀 *Trading Bot Starting*\n\n"
-                          f"Symbol: {symbol}\n"
-                          f"Strategy: {strategy_name}\n"
-                          f"Timeframe: {timeframe}\n"
-                          f"Starting Balance: {stats['current_balance']:.2f} USDT")
+        # Original sequential flow for when arguments are provided
+        # Step 1: Run a backtest first to validate the strategy
+        if not args.skip_validation and BACKTEST_BEFORE_LIVE:
+            logger.info("===== STEP 1: RUNNING STRATEGY VALIDATION BACKTEST =====")
+            is_valid, validation_message = run_safety_backtest(symbol, timeframe, strategy_name)
+            
+            if not is_valid:
+                logger.warning(f"Strategy validation failed: {validation_message}")
+                logger.warning("You can override this with --skip-validation flag")
+                
+                # Notify user and wait for confirmation to continue
+                notifier = TelegramNotifier()
+                notifier.send_message(f"⚠️ *Strategy Validation Failed*\n\n"
+                                    f"Symbol: {symbol}\n"
+                                    f"Strategy: {strategy_name}\n"
+                                    f"Reason: {validation_message}\n\n"
+                                    f"Bot will continue anyway as validation is not strict. Add --skip-validation to bypass this check.")
+                
+                logger.warning("Continuing despite strategy validation failure after 5 seconds...")
+                time.sleep(5)  # Brief pause to allow user to see the message
+        else:
+            logger.info("Strategy validation backtest skipped")
+        
+        # Step 2: Perform a test trade to verify API connectivity and permissions
+        if not (args.skip_test_trade or args.small_account):
+            logger.info("===== STEP 2: PERFORMING TEST TRADE =====")
+            test_trade_success = perform_test_trade(symbol)
+            
+            if not test_trade_success:
+                logger.error("Test trade failed! Please check API settings and permissions.")
+                logger.error("You can bypass this check with --skip-test-trade flag")
+                
+                # Notify user and wait for confirmation to continue
+                notifier = TelegramNotifier()
+                notifier.send_message(f"⚠️ *Test Trade Failed*\n\n"
+                                    f"Symbol: {symbol}\n"
+                                    f"Check API keys, permissions, and account balance.\n\n"
+                                    f"Bot will continue anyway with live trading. Use --skip-test-trade to bypass this check in the future.")
+                
+                logger.warning("Continuing despite test trade failure after 10 seconds...")
+                time.sleep(10)  # Longer pause for test trade issues as they're more serious
+        else:
+            logger.info("Test trade skipped")
+        
+        # Step 3: Start the actual trading bot
+        logger.info("===== STEP 3: STARTING LIVE TRADING BOT =====")
+        notifier = TelegramNotifier()
+        notifier.send_message(f"🚀 *Trading Bot Starting*\n\n"
+                            f"Symbol: {symbol}\n"
+                            f"Strategy: {strategy_name}\n"
+                            f"Timeframe: {timeframe}\n"
+                            f"Starting Balance: {stats['current_balance']:.2f} USDT")
     
     # Main trading loop
     check_interval = args.interval * 60  # Convert to seconds
