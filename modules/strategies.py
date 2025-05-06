@@ -4,6 +4,7 @@ import pandas as pd
 import ta
 import math
 from datetime import datetime, timedelta
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,12 @@ class TradingStrategy:
     def __init__(self, strategy_name):
         self.strategy_name = strategy_name
         self.risk_manager = None
+        # Add cache related attributes
+        self._cache = {}
+        self._max_cache_entries = 10  # Limit cache size
+        self._cache_expiry = 3600  # Cache expiry in seconds (1 hour)
+        self._last_kline_time = None
+        self._cached_dataframe = None
         
     def prepare_data(self, klines):
         """Convert raw klines to a DataFrame with OHLCV data"""
@@ -100,6 +107,9 @@ class TradingStrategy:
         # Convert timestamps to datetime
         df['open_time'] = pd.to_datetime(df['open_time'], unit='ms')
         df['close_time'] = pd.to_datetime(df['close_time'], unit='ms')
+        
+        # Ensure dataframe is sorted by time
+        df = df.sort_values('open_time', ascending=True).reset_index(drop=True)
         
         return df
     
@@ -212,19 +222,66 @@ class LayerDynamicGridStrategy(TradingStrategy):
     def prepare_data(self, klines):
         """
         Convert raw klines to a DataFrame with OHLCV data
-        Overrides base method to implement caching for performance
+        Overrides base method to implement enhanced caching for performance
         """
+        # Generate a cache key based on first and last kline timestamps
+        cache_key = None
+        if len(klines) > 0:
+            cache_key = f"{klines[0][0]}_{klines[-1][0]}"
+        
         # Check if we can use cached data
+        if cache_key:
+            current_time = int(datetime.now().timestamp())
+            
+            # Clean up expired cache entries periodically
+            if random.random() < 0.05:  # 5% chance to clean on each call
+                expired_keys = []
+                for k, v in self._cache.items():
+                    if current_time - v.get('time', 0) > self._cache_expiry:
+                        expired_keys.append(k)
+                for k in expired_keys:
+                    del self._cache[k]
+                    logger.debug(f"Removed expired cache entry: {k}")
+            
+            # Look for cache entry
+            if cache_key in self._cache:
+                cache_entry = self._cache[cache_key]
+                cache_time = cache_entry.get('time', 0)
+                
+                # Check if cache is still valid (not expired)
+                if current_time - cache_time < self._cache_expiry:
+                    logger.debug(f"Using cached data for {cache_key}")
+                    return cache_entry['data']
+        
+        # Fall back to simple cache check if complex caching fails
         if len(klines) > 0 and self._last_kline_time == klines[-1][0]:
-            return self._cached_dataframe
+            if self._cached_dataframe is not None:
+                return self._cached_dataframe
             
         # Otherwise prepare data normally
         df = super().prepare_data(klines)
         
         # Cache the result
         if len(klines) > 0:
+            # Simple caching (backward compatible)
             self._last_kline_time = klines[-1][0]
             self._cached_dataframe = df
+            
+            # Enhanced caching with expiry and size management
+            if cache_key:
+                # Manage cache size - remove oldest entry if needed
+                if len(self._cache) >= self._max_cache_entries:
+                    oldest_key = min(self._cache.keys(), 
+                                    key=lambda k: self._cache[k].get('time', 0))
+                    del self._cache[oldest_key]
+                    logger.debug(f"Cache full, removed oldest entry {oldest_key}")
+                
+                # Store in cache with timestamp
+                self._cache[cache_key] = {
+                    'data': df,
+                    'time': current_time
+                }
+                logger.debug(f"Cached data for {cache_key}")
             
         return df
     
@@ -243,8 +300,12 @@ class LayerDynamicGridStrategy(TradingStrategy):
         # Momentum indicators
         df['rsi'] = ta.momentum.rsi(df['close'], window=self.rsi_period)
         
-        # Volume-weighted RSI
-        df['volume_ratio'] = df['volume'] / df['volume'].rolling(window=self.volume_ma_period).mean()
+        # Volume indicators first to avoid duplicate calculation
+        df['volume_ma'] = ta.trend.sma_indicator(df['volume'], 
+                                                window=self.volume_ma_period)
+        df['volume_ratio'] = df['volume'] / df['volume_ma']
+        
+        # Volume-weighted RSI (using the volume_ratio calculated above)
         df['volume_weighted_rsi'] = df['rsi'] * df['volume_ratio']
         
         # Volatility indicators
@@ -259,11 +320,6 @@ class LayerDynamicGridStrategy(TradingStrategy):
         df['adx'] = adx_indicator.adx()
         df['di_plus'] = adx_indicator.adx_pos()
         df['di_minus'] = adx_indicator.adx_neg()
-        
-        # Volume indicators
-        df['volume_ma'] = ta.trend.sma_indicator(df['volume'], 
-                                                window=self.volume_ma_period)
-        df['volume_ratio'] = df['volume'] / df['volume_ma']
         
         # Bollinger Bands
         indicator_bb = ta.volatility.BollingerBands(df['close'], 
@@ -790,15 +846,24 @@ class LayerDynamicGridStrategy(TradingStrategy):
     def in_cooloff_period(self, current_time):
         """Check if we're in a cool-off period after losses"""
         if self.consecutive_losses >= self.max_consecutive_losses and self.last_loss_time:
-            # Convert from pandas timestamp if needed
-            if hasattr(self.last_loss_time, 'to_pydatetime'):
-                last_loss_time = self.last_loss_time.to_pydatetime()
-            else:
-                last_loss_time = self.last_loss_time
+            try:
+                # Convert from pandas timestamp if needed
+                if hasattr(self.last_loss_time, 'to_pydatetime'):
+                    last_loss_time = self.last_loss_time.to_pydatetime()
+                else:
+                    last_loss_time = self.last_loss_time
+                    
+                # Convert current_time from pandas timestamp if needed
+                if hasattr(current_time, 'to_pydatetime'):
+                    current_time = current_time.to_pydatetime()
                 
-            # Check if we're still in the cool-off period
-            cooloff_end_time = last_loss_time + timedelta(minutes=self.cooloff_period)
-            return current_time < cooloff_end_time
+                # Check if we're still in the cool-off period
+                cooloff_end_time = last_loss_time + timedelta(minutes=self.cooloff_period)
+                return current_time < cooloff_end_time
+            except Exception as e:
+                logger.error(f"Error in cooloff period calculation: {e}")
+                # Default to False if there's an error in comparison
+                return False
             
         return False
     
@@ -854,31 +919,54 @@ class LayerDynamicGridStrategy(TradingStrategy):
     
     def get_multi_indicator_signal(self, df):
         """
-        Get signals based on multi-indicator confirmation
+        Get signals based on multi-indicator confirmation with stronger consolidated validation
         """
         if len(df) < 5:
             return None
             
         latest = df.iloc[-1]
+        prev = df.iloc[-2]
         
-        # Count bullish and bearish signals
+        # Count bullish and bearish signals with weighting for stronger indicators
         bullish_signals = 0
         bearish_signals = 0
         
-        # Supertrend
+        # === PRIMARY INDICATORS (Higher weight) ===
+        
+        # Supertrend (stronger weight x2)
         if latest['supertrend_direction'] == 1:
-            bullish_signals += 1
+            bullish_signals += 2
         else:
-            bearish_signals += 1
+            bearish_signals += 2
             
-        # RSI
+        # Price action relative to key levels
+        if latest['close'] > latest['ema_slow'] and latest['close'] > latest['vwap']:
+            bullish_signals += 1.5  # Strong bullish price action
+        elif latest['close'] < latest['ema_slow'] and latest['close'] < latest['vwap']:
+            bearish_signals += 1.5  # Strong bearish price action
+        
+        # Trend direction change (stronger weight)
+        if prev['supertrend_direction'] == -1 and latest['supertrend_direction'] == 1:
+            bullish_signals += 2  # Fresh bullish trend
+        elif prev['supertrend_direction'] == 1 and latest['supertrend_direction'] == -1:
+            bearish_signals += 2  # Fresh bearish trend
+            
+        # === SECONDARY INDICATORS ===
+        
+        # RSI & Volume-weighted RSI
         if latest['rsi'] < 30:
             bullish_signals += 1
         elif latest['rsi'] > 70:
             bearish_signals += 1
             
+        # More extreme RSI values (stronger weight)
+        if latest['rsi'] < 20:
+            bullish_signals += 0.5  # Very oversold
+        elif latest['rsi'] > 80:
+            bearish_signals += 0.5  # Very overbought
+            
         # Volume-weighted RSI
-        if latest['volume_weighted_rsi'] < 25:  # Lower threshold with volume weighting
+        if latest['volume_weighted_rsi'] < 25:
             bullish_signals += 1
         elif latest['volume_weighted_rsi'] > 75:
             bearish_signals += 1
@@ -889,6 +977,14 @@ class LayerDynamicGridStrategy(TradingStrategy):
         elif latest['macd_crossover'] == -1:
             bearish_signals += 1
             
+        # Volume confirmation
+        if latest['volume_ratio'] > 1.5:
+            # High volume adds weight to the dominant direction
+            if bullish_signals > bearish_signals:
+                bullish_signals += 1
+            elif bearish_signals > bullish_signals:
+                bearish_signals += 1
+            
         # ADX trend strength
         if latest['adx'] > self.adx_threshold:
             if latest['di_plus'] > latest['di_minus']:
@@ -896,25 +992,69 @@ class LayerDynamicGridStrategy(TradingStrategy):
             else:
                 bearish_signals += 1
                 
+        # Strong ADX (higher weight)
+        if latest['adx'] > self.adx_threshold * 1.5:
+            if latest['di_plus'] > latest['di_minus']:
+                bullish_signals += 0.5  # Strong trend confirmation
+            else:
+                bearish_signals += 0.5  # Strong trend confirmation
+                
+        # === SUPPORT/RESISTANCE CONFIRMATIONS ===
+                
         # Price relative to VWAP
         if latest['close'] < latest['vwap'] * 0.98:
-            bullish_signals += 1
+            bullish_signals += 0.5  # Potential support
         elif latest['close'] > latest['vwap'] * 1.02:
-            bearish_signals += 1
+            bearish_signals += 0.5  # Potential resistance
             
-        # Fibonacci levels
+        # Bollinger Bands
+        if latest['close'] < latest['bb_lower'] * 1.01:
+            bullish_signals += 1  # At support
+        elif latest['close'] > latest['bb_upper'] * 0.99:
+            bearish_signals += 1  # At resistance
+        
+        # Fibonacci levels (higher weight)
         close_to_fib_support = any(abs(latest['close'] - level) / latest['close'] < 0.005 for level in self.fib_support_levels)
         close_to_fib_resistance = any(abs(latest['close'] - level) / latest['close'] < 0.005 for level in self.fib_resistance_levels)
         
         if close_to_fib_support:
-            bullish_signals += 1
+            bullish_signals += 1.5  # Strong support
         if close_to_fib_resistance:
-            bearish_signals += 1
+            bearish_signals += 1.5  # Strong resistance
             
+        # === MARKET CONDITION ADJUSTMENT ===
+        
+        # Adjust signal thresholds based on market condition
+        market_condition = latest['market_condition']
+        bull_threshold = 5.0  # Base threshold
+        bear_threshold = 5.0  # Base threshold
+        
+        if market_condition in ['BULLISH', 'EXTREME_BULLISH']:
+            bull_threshold -= 0.5  # Easier to trigger buy in bullish market
+            bear_threshold += 1.0  # Harder to trigger sell in bullish market
+        elif market_condition in ['BEARISH', 'EXTREME_BEARISH']:
+            bull_threshold += 1.0  # Harder to trigger buy in bearish market
+            bear_threshold -= 0.5  # Easier to trigger sell in bearish market
+        elif market_condition == 'SQUEEZE':
+            # In squeeze, wait for stronger confirmation
+            bull_threshold += 0.5
+            bear_threshold += 0.5
+            
+        # === FINAL SIGNAL DETERMINATION ===
+        
+        # Calculate signal strength as a percentage of max possible
+        bull_strength = bullish_signals / 15 * 100  # 15 is approximate max possible score
+        bear_strength = bearish_signals / 15 * 100
+        
+        logger.debug(f"Multi-indicator signals - Bullish: {bullish_signals:.1f} ({bull_strength:.1f}%), " +
+                    f"Bearish: {bearish_signals:.1f} ({bear_strength:.1f}%)")
+        
         # Return signal based on strong confirmation from multiple indicators
-        if bullish_signals >= 3 and bullish_signals > bearish_signals + 1:
+        if bullish_signals >= bull_threshold and bullish_signals > bearish_signals * 1.5:
+            logger.info(f"Strong bullish confirmation: {bullish_signals:.1f} signals ({bull_strength:.1f}%)")
             return 'BUY'
-        if bearish_signals >= 3 and bearish_signals > bullish_signals + 1:
+        if bearish_signals >= bear_threshold and bearish_signals > bullish_signals * 1.5:
+            logger.info(f"Strong bearish confirmation: {bearish_signals:.1f} signals ({bear_strength:.1f}%)")
             return 'SELL'
             
         return None
