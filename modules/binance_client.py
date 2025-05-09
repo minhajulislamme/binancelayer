@@ -24,8 +24,8 @@ class BinanceClient:
                 # Initialize with simple parameters for compatibility
                 client = Client(API_KEY, API_SECRET, testnet=API_TESTNET)
                 
-                # Set proper timeout for API calls
-                client.options = {'timeout': 10, 'recvWindow': RECV_WINDOW}
+                # Set proper timeout for API calls - increased timeout for historical data
+                client.options = {'timeout': 60, 'recvWindow': RECV_WINDOW}
                 
                 # Test the connection by making a simple API call
                 client.get_server_time()
@@ -324,20 +324,47 @@ class BinanceClient:
     
     def get_historical_klines(self, symbol, interval, start_str, end_str=None, limit=1000):
         """Get historical candlestick data"""
-        max_retries = 3
-        backoff_factor = 2
+        max_retries = 5  # Increased from 3 to 5 for historical data
+        backoff_factor = 5  # Increased backoff for historical data fetching
+        
+        # Save current timeout setting
+        current_timeout = self.client.options.get('timeout', 60)
+        
+        # Temporarily increase timeout for historical data
+        self.client.options['timeout'] = 120  # 2-minute timeout for historical data
+        
+        logger.info(f"Fetching historical klines for {symbol}, period: {start_str} to {end_str or 'now'}")
         
         for retry in range(max_retries):
             try:
-                # Remove the recvWindow parameter that's causing the error
-                klines = self.client.futures_historical_klines(
-                    symbol=symbol,
-                    interval=interval,
-                    start_str=start_str,
-                    end_str=end_str,
-                    limit=limit
-                )
-                return klines
+                # First try the futures API
+                try:
+                    klines = self.client.futures_historical_klines(
+                        symbol=symbol,
+                        interval=interval,
+                        start_str=start_str,
+                        end_str=end_str,
+                        limit=limit
+                    )
+                    logger.info(f"Successfully fetched {len(klines)} historical klines")
+                    # Restore original timeout
+                    self.client.options['timeout'] = current_timeout
+                    return klines
+                except Exception as futures_e:
+                    logger.warning(f"Futures API failed: {futures_e}, trying spot API as fallback")
+                    # Fall back to spot API
+                    klines = self.client.get_historical_klines(
+                        symbol=symbol,
+                        interval=interval,
+                        start_str=start_str,
+                        end_str=end_str,
+                        limit=limit
+                    )
+                    logger.info(f"Successfully fetched {len(klines)} historical klines from spot API")
+                    # Restore original timeout
+                    self.client.options['timeout'] = current_timeout
+                    return klines
+                    
             except Exception as e:
                 error_str = str(e)
                 # Check for common error types that should be retried
@@ -351,15 +378,18 @@ class BinanceClient:
                     "<!DOCTYPE html>"
                 ]
                 
-                should_retry = any(err in error_str for err in retry_errors)
+                should_retry = any(err in error_str for err in retry_errors) or "timed out" in error_str.lower()
                 
                 if should_retry and retry < max_retries - 1:
                     wait_time = backoff_factor * (2 ** retry)
-                    logger.warning(f"Retrying get_historical_klines due to error: {e}")
+                    logger.warning(f"Retrying get_historical_klines (attempt {retry+1}/{max_retries}) due to error: {e}")
+                    logger.warning(f"Waiting {wait_time} seconds before retry...")
                     time.sleep(wait_time)
                 else:
                     if "<!DOCTYPE html>" in error_str:
                         logger.error(f"Binance API returned HTML instead of JSON. Historical data unavailable.")
+                        # Restore original timeout
+                        self.client.options['timeout'] = current_timeout
                         return []
                     elif "unexpected keyword argument" in error_str:
                         # Handle the specific error about unexpected arguments
@@ -374,15 +404,23 @@ class BinanceClient:
                                     end_str=end_str,
                                     limit=limit
                                 )
+                                # Restore original timeout
+                                self.client.options['timeout'] = current_timeout
                                 return klines
                             except Exception as inner_e:
                                 logger.error(f"Second attempt failed: {inner_e}")
+                                # Restore original timeout
+                                self.client.options['timeout'] = current_timeout
                                 return []
                     else:
                         logger.error(f"Failed to get historical klines: {e}")
+                        # Restore original timeout
+                        self.client.options['timeout'] = current_timeout
                         return []
         
         logger.error("Maximum retries reached when getting historical klines")
+        # Restore original timeout
+        self.client.options['timeout'] = current_timeout
         return []
     
     def place_market_order(self, symbol, side, quantity):

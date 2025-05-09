@@ -243,6 +243,9 @@ def setup():
             stats['current_balance'] = 50.0
             logger.warning("Failed to get balance from API and no INITIAL_BALANCE in config. Using default: 50.0 USDT")
     
+    # Make sure total_profit is reset properly
+    stats['total_profit'] = 0.0
+    stats['daily_profit'] = 0.0
     stats['last_report_time'] = datetime.now()
     
     # Set new_candle_received flag to False initially
@@ -295,6 +298,8 @@ def initialize_state_file(force=False):
         # Update stats
         stats['start_balance'] = current_balance
         stats['current_balance'] = current_balance
+        stats['total_profit'] = 0.0
+        stats['daily_profit'] = 0.0
         stats['last_report_time'] = datetime.now()
         
         # Save to file - convert all datetime objects to ISO format
@@ -474,20 +479,34 @@ def on_account_update(balance_updates, position_updates):
         if 'USDT' in balance_updates:
             new_balance = balance_updates['USDT']
             
-            if 'current_balance' in stats:
+            if 'current_balance' in stats and stats['current_balance'] > 0:
                 balance_change = new_balance - stats['current_balance']
-                stats['daily_profit'] += balance_change
+                # Only add to daily profit if we're processing a realized profit/loss from a trade
+                # This helps avoid counting deposits/withdrawals as profit/loss
+                if len(position_updates) > 0:
+                    stats['daily_profit'] += balance_change
+                    logger.info(f"Balance change from trade: {balance_change:.6f} USDT, Daily P/L: {stats['daily_profit']:.6f} USDT")
+                else:
+                    logger.info(f"Balance change (non-trade): {balance_change:.6f} USDT")
             
             stats['current_balance'] = new_balance
-            logger.info(f"Balance updated: {new_balance} USDT")
+            logger.info(f"Balance updated: {new_balance:.6f} USDT")
             
-            risk_manager.update_balance_for_compounding()
+            # Update risk manager with new balance
+            if risk_manager:
+                risk_manager.update_balance_for_compounding()
             
+        # Log position updates with more precision
         for symbol, position in position_updates.items():
-            logger.info(f"Position update for {symbol}: {position['position_amount']} @ {position['entry_price']}, PnL: {position['unrealized_pnl']}")
+            position_amount = position['position_amount']
+            entry_price = position['entry_price']
+            unrealized_pnl = position['unrealized_pnl']
+            logger.info(f"Position update for {symbol}: {position_amount} @ {entry_price} (Unrealized P/L: {unrealized_pnl:.6f} USDT)")
             
     except Exception as e:
         logger.error(f"Error processing account update: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
 
 
 def on_order_update(order_data):
@@ -572,18 +591,26 @@ def on_order_update(order_data):
                 current_balance = stats['current_balance']
                 try:
                     current_balance = binance_client.get_account_balance()
-                    stats['current_balance'] = current_balance
-                    logger.info(f"💰 ACCOUNT BALANCE: {current_balance:.2f} USDT 💰")
+                    if current_balance > 0:
+                        # Calculate trade P&L by comparing balances (more accurate than just using realized_profit)
+                        if stats['current_balance'] > 0:
+                            trade_pnl = current_balance - stats['current_balance']
+                            # Update total profit stats based on actual balance change
+                            stats['total_profit'] = stats.get('total_profit', 0) + trade_pnl
+                            logger.info(f"Trade P&L based on balance change: {trade_pnl:.6f} USDT")
+                        
+                        stats['current_balance'] = current_balance
+                        logger.info(f"💰 ACCOUNT BALANCE: {current_balance:.6f} USDT 💰")
                 except Exception as e:
                     logger.error(f"Failed to get account balance after trade: {e}")
                 
                 # Send detailed notification with trade info and account status
                 notifier = TelegramNotifier()
-                
+            
                 if side == 'BUY':
                     message = f"🟢 *Position Opened*\n"
                 else:
-                    message = f"🔴 *Position Closed*\n"
+                    message = f"🔴 *Position Opened*\n"
                     
                 # Basic trade info
                 message += f"Symbol: {symbol}\n" \
@@ -695,9 +722,14 @@ def check_for_signals(symbol=None):
             logger.error("Binance client not initialized. Cannot place trades.")
             return
             
-        if signal == "BUY" and position_amount <= 0:
+        if signal == "BUY":
+            # Skip if already in a LONG position - don't close and reopen
+            if position_amount > 0:
+                logger.info(f"Already in a LONG position ({position_amount}). Ignoring BUY signal.")
+                return
+                
             # Handle SHORT → LONG transition
-            if position_amount < 0:
+            elif position_amount < 0:
                 logger.info(f"POSITION TRANSITION: Closing existing SHORT position ({position_amount}) before going LONG")
                 
                 # Cancel existing orders first
@@ -726,7 +758,8 @@ def check_for_signals(symbol=None):
                     logger.error("❌ Failed to close SHORT position! Cannot proceed with opening LONG position.")
                     return
             
-            # Check if we should open a new position
+            # Check if we should open a new position - at this point we know we don't have an existing LONG position
+            logger.info(f"Opening new LONG position based on BUY signal (current position amount: {position_amount})")
             if risk_manager.should_open_position(symbol):
                 stop_loss_price = risk_manager.calculate_stop_loss(symbol, "BUY", current_price)
                 
@@ -797,9 +830,14 @@ def check_for_signals(symbol=None):
                 else:
                     logger.error("❌ Failed to place BUY order to open position")
                     
-        elif signal == "SELL" and position_amount >= 0:
+        elif signal == "SELL":
+            # Skip if already in a SHORT position - don't close and reopen
+            if position_amount < 0:
+                logger.info(f"Already in a SHORT position ({position_amount}). Ignoring SELL signal.")
+                return
+                
             # Handle LONG → SHORT transition
-            if position_amount > 0:
+            elif position_amount > 0:
                 logger.info(f"POSITION TRANSITION: Closing existing LONG position ({position_amount}) before going SHORT")
                 
                 # Cancel existing orders first
@@ -827,7 +865,8 @@ def check_for_signals(symbol=None):
                     logger.error("❌ Failed to close LONG position! Cannot proceed with opening SHORT position.")
                     return
                 
-            # Check if we should open a new position
+            # Check if we should open a new position - at this point we know we don't have an existing SHORT position
+            logger.info(f"Opening new SHORT position based on SELL signal (current position amount: {position_amount})")
             if risk_manager.should_open_position(symbol):
                 stop_loss_price = risk_manager.calculate_stop_loss(symbol, "SELL", current_price)
                 
@@ -900,6 +939,9 @@ def check_for_signals(symbol=None):
         
         # Handle trailing stops and take profits for existing positions
         if position and abs(position['position_amount']) > 0:
+            position_side = "LONG" if position['position_amount'] > 0 else "SHORT"
+            logger.info(f"Managing existing {position_side} position with size {abs(position['position_amount'])}, received {signal} signal")
+            
             side = "BUY" if position['position_amount'] > 0 else "SELL"
             opposite_side = "SELL" if side == "BUY" else "BUY"
             
@@ -978,7 +1020,14 @@ def generate_performance_report():
     profit_loss = current_balance - stats['start_balance']
     profit_pct = (profit_loss / stats['start_balance']) * 100 if stats['start_balance'] > 0 else 0
     
+    # More accurate daily profit percent calculation
     daily_profit_pct = (stats['daily_profit'] / (current_balance - stats['daily_profit'])) * 100 if (current_balance - stats['daily_profit']) > 0 else 0
+    
+    # If we have total profit directly from trade stats, use that for more accuracy
+    if 'total_profit' in stats and stats['total_profit'] != 0:
+        logger.info(f"Using accumulated trade profit: {stats['total_profit']:.6f} USDT (vs balance diff: {profit_loss:.6f} USDT)")
+        # Don't replace profit_loss with total_profit as they measure different things
+        # profit_loss is the change in account value, while total_profit is from trades only
     
     # Load state from file to ensure we have the most recent data
     state_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'state', 'trading_state.json')
@@ -1217,6 +1266,17 @@ def save_trade(trade_data):
     if 'timestamp' not in trade_data:
         trade_data['timestamp'] = datetime.now().isoformat()
     
+    # Make sure we have the latest balance
+    if 'balance' not in trade_data or trade_data['balance'] <= 0:
+        try:
+            current_balance = binance_client.get_account_balance()
+            if current_balance > 0:
+                trade_data['balance'] = current_balance
+            else:
+                trade_data['balance'] = stats['current_balance']  # Fallback to stats
+        except Exception:
+            trade_data['balance'] = stats['current_balance']  # Fallback to stats if API call fails
+    
     trades_file = os.path.join(trade_dir, 'trades.json')
     
     trades = []
@@ -1311,8 +1371,10 @@ def run_backtest(symbol, timeframe, strategy_name, start_date, end_date=None, sa
             backtest_start_date = start_date
             
         logger.info(f"Fetching historical data from: {api_start_date} (as {backtest_start_date})")
+        logger.info(f"Using {symbol} on {timeframe} timeframe")
         
         try:
+            logger.info("Starting historical data request - this may take some time...")
             klines = binance.get_historical_klines(
                 symbol=symbol,
                 interval=timeframe,
@@ -1320,8 +1382,10 @@ def run_backtest(symbol, timeframe, strategy_name, start_date, end_date=None, sa
                 end_str=end_date,
                 limit=1000
             )
+            logger.info(f"Successfully retrieved {len(klines)} historical candles")
         except Exception as api_error:
             logger.error(f"API Error fetching klines: {api_error}")
+            logger.error(f"Detailed error: {traceback.format_exc()}")
             return None
         
         if not klines or len(klines) < 100:
