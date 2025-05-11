@@ -134,6 +134,21 @@ This strategy implements a sophisticated grid trading approach specifically opti
    - Trailing stops for maximizing profit in strong trends
    - Dynamic stop loss based on ATR and support/resistance levels
 
+### AvaxDynamicGrid Strategy
+
+Specialized for AVAX's higher volatility characteristics:
+
+1. **Wider Grid Spacing**: Adjusted for AVAX's larger price movements
+2. **Enhanced Volatility Handling**:
+   - More responsive to momentum shifts
+   - Optimized for AVAX's faster market cycles
+3. **Modified Market Detection**:
+   - Earlier trend identification
+   - Adjusted RSI thresholds for AVAX's volatility patterns
+4. **Breakout Focus**:
+   - More aggressive positioning for post-consolidation breakouts
+   - Fibonacci-based trade targets calibrated for AVAX's price action
+
 ## ⚙️ Configuration
 
 The bot can be fully customized through the `.env` file and command-line arguments. Key configuration parameters:

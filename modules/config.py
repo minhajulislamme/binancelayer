@@ -44,15 +44,37 @@ LAYER_TREND_CONDITION_MULTIPLIER = float(os.getenv('LAYER_TREND_CONDITION_MULTIP
 LAYER_MIN_GRID_SPACING = float(os.getenv('LAYER_MIN_GRID_SPACING', '0.6'))
 LAYER_MAX_GRID_SPACING = float(os.getenv('LAYER_MAX_GRID_SPACING', '3.5'))
 
+# AVAX-specific strategy settings
+AVAX_GRID_LEVELS = int(os.getenv('AVAX_GRID_LEVELS', '6'))  # Higher volatility, more grid levels
+AVAX_GRID_SPACING_PCT = float(os.getenv('AVAX_GRID_SPACING_PCT', '1.5'))  # Wider grid spacing for AVAX
+AVAX_TREND_EMA_FAST = int(os.getenv('AVAX_TREND_EMA_FAST', '7'))  # Slightly faster trend detection
+AVAX_TREND_EMA_SLOW = int(os.getenv('AVAX_TREND_EMA_SLOW', '21'))
+AVAX_VOLATILITY_LOOKBACK = int(os.getenv('AVAX_VOLATILITY_LOOKBACK', '14'))  # Shorter lookback for more responsive
+AVAX_VOLUME_MA_PERIOD = int(os.getenv('AVAX_VOLUME_MA_PERIOD', '20'))
+# AVAX-specific advanced parameters
+AVAX_VOLATILITY_MULTIPLIER = float(os.getenv('AVAX_VOLATILITY_MULTIPLIER', '1.2'))  # Higher volatility multiplier
+AVAX_TREND_CONDITION_MULTIPLIER = float(os.getenv('AVAX_TREND_CONDITION_MULTIPLIER', '1.4'))  # More aggressive in trends
+AVAX_MIN_GRID_SPACING = float(os.getenv('AVAX_MIN_GRID_SPACING', '0.8'))  # Higher min spacing
+AVAX_MAX_GRID_SPACING = float(os.getenv('AVAX_MAX_GRID_SPACING', '4.0'))  # Higher max spacing
+
 # Market condition detection settings
 LAYER_ADX_PERIOD = int(os.getenv('LAYER_ADX_PERIOD', '14'))
 LAYER_ADX_THRESHOLD = int(os.getenv('LAYER_ADX_THRESHOLD', '25'))
 LAYER_SIDEWAYS_THRESHOLD = int(os.getenv('LAYER_SIDEWAYS_THRESHOLD', '15'))
 
+# AVAX market condition detection settings
+AVAX_ADX_PERIOD = int(os.getenv('AVAX_ADX_PERIOD', '14'))
+AVAX_ADX_THRESHOLD = int(os.getenv('AVAX_ADX_THRESHOLD', '23'))  # Slightly more sensitive to trend
+AVAX_SIDEWAYS_THRESHOLD = int(os.getenv('AVAX_SIDEWAYS_THRESHOLD', '17'))  # More tolerance in sideways
+
 # Position sizing
 INITIAL_BALANCE = float(os.getenv('INITIAL_BALANCE', '50.0'))
 RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', '0.10'))
 MAX_OPEN_POSITIONS = int(os.getenv('MAX_OPEN_POSITIONS', '6'))
+
+# Multi-instance configuration for running separate bot instances per trading pair
+MULTI_INSTANCE_MODE = os.getenv('MULTI_INSTANCE_MODE', 'True').lower() == 'true'
+MAX_POSITIONS_PER_SYMBOL = int(os.getenv('MAX_POSITIONS_PER_SYMBOL', '3'))
 
 # Auto-compounding settings
 AUTO_COMPOUND = os.getenv('AUTO_COMPOUND', 'True').lower() == 'true'

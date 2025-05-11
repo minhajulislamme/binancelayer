@@ -520,6 +520,24 @@ class BinanceClient:
         max_retries = 3
         backoff_factor = 2
         
+        # First, cancel any existing stop loss orders for this symbol to avoid conflicts
+        try:
+            existing_orders = self.get_open_orders(symbol)
+            for order in existing_orders:
+                if (order.get('type') in ['STOP_MARKET', 'STOP'] and 
+                    order.get('symbol') == symbol):
+                    try:
+                        self.client.futures_cancel_order(
+                            symbol=symbol, 
+                            orderId=order.get('orderId')
+                        )
+                        logger.info(f"Cancelled existing stop loss order {order.get('orderId')} for {symbol}")
+                    except Exception as e:
+                        logger.warning(f"Error cancelling existing stop loss order: {e}")
+        except Exception as e:
+            logger.warning(f"Error checking existing stop loss orders: {e}")
+        
+        # Place new stop loss order
         for retry in range(max_retries):
             try:
                 params = {
@@ -573,6 +591,24 @@ class BinanceClient:
         max_retries = 3
         backoff_factor = 2
         
+        # First, cancel any existing take profit orders for this symbol to avoid conflicts
+        try:
+            existing_orders = self.get_open_orders(symbol)
+            for order in existing_orders:
+                if (order.get('type') in ['TAKE_PROFIT_MARKET', 'TAKE_PROFIT'] and 
+                    order.get('symbol') == symbol):
+                    try:
+                        self.client.futures_cancel_order(
+                            symbol=symbol, 
+                            orderId=order.get('orderId')
+                        )
+                        logger.info(f"Cancelled existing take profit order {order.get('orderId')} for {symbol}")
+                    except Exception as e:
+                        logger.warning(f"Error cancelling existing take profit order: {e}")
+        except Exception as e:
+            logger.warning(f"Error checking existing take profit orders: {e}")
+            
+        # Place new take profit order
         for retry in range(max_retries):
             try:
                 params = {
@@ -716,29 +752,46 @@ class BinanceClient:
         position_orders = []
         
         for order in orders:
-            # Check if the order is a stop loss or take profit order
-            if order.get('type') in ['STOP_MARKET', 'STOP', 'TAKE_PROFIT_MARKET', 'TAKE_PROFIT']:
+            # Check if the order is a stop loss or take profit order AND matches our symbol
+            if (order.get('type') in ['STOP_MARKET', 'STOP', 'TAKE_PROFIT_MARKET', 'TAKE_PROFIT']
+                and order.get('symbol') == symbol):
                 position_orders.append(order)
                 
         logger.info(f"Found {len(position_orders)} position-related orders for {symbol}")
         return position_orders
     
     def cancel_position_orders(self, symbol):
-        """Cancel all orders related to a position (stop loss and take profit orders)"""
+        """
+        Cancel all orders related to a position (stop loss and take profit orders)
+        
+        In multi-instance mode, this ensures only orders for the specific symbol are cancelled,
+        allowing separate bot instances to operate independently for different trading pairs.
+        """
+        # Specifically get orders related to this symbol's position
         position_orders = self.get_position_related_orders(symbol)
         cancelled = 0
         
+        # Double verify that we only cancel orders for the specified symbol
         for order in position_orders:
             try:
                 order_id = order.get('orderId')
-                if order_id:
+                order_symbol = order.get('symbol')
+                
+                # Extra check to ensure we only cancel orders for our specific symbol
+                # This is critical for multi-instance mode to prevent interference
+                if order_id and order_symbol == symbol:
                     self.client.futures_cancel_order(symbol=symbol, orderId=order_id)
-                    logger.info(f"Cancelled position order {order_id} for {symbol}")
+                    order_type = order.get('type', 'unknown')
+                    logger.info(f"Cancelled {order_type} order {order_id} for {symbol}")
                     cancelled += 1
+                elif order_symbol != symbol:
+                    # This should never happen given our filtering in get_position_related_orders
+                    # But adding a safety check for robustness
+                    logger.warning(f"Skipping cancellation of order {order_id} for {order_symbol} (not {symbol})")
             except BinanceAPIException as e:
-                logger.error(f"Failed to cancel position order: {e}")
+                logger.error(f"Failed to cancel position order for {symbol}: {e}")
             except Exception as e:
-                logger.error(f"Unexpected error cancelling position order: {e}")
+                logger.error(f"Unexpected error cancelling position order for {symbol}: {e}")
                 
         logger.info(f"Cancelled {cancelled} position-related orders for {symbol}")
         return cancelled

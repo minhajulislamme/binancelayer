@@ -11,7 +11,9 @@ from modules.config import (
     STOP_LOSS_PCT_BULLISH, STOP_LOSS_PCT_BEARISH, STOP_LOSS_PCT_SIDEWAYS,
     TAKE_PROFIT_PCT_BULLISH, TAKE_PROFIT_PCT_BEARISH, TAKE_PROFIT_PCT_SIDEWAYS,
     TRAILING_STOP_PCT_BULLISH, TRAILING_STOP_PCT_BEARISH, TRAILING_STOP_PCT_SIDEWAYS,
-    TRAILING_TAKE_PROFIT_PCT_BULLISH, TRAILING_TAKE_PROFIT_PCT_BEARISH, TRAILING_TAKE_PROFIT_PCT_SIDEWAYS
+    TRAILING_TAKE_PROFIT_PCT_BULLISH, TRAILING_TAKE_PROFIT_PCT_BEARISH, TRAILING_TAKE_PROFIT_PCT_SIDEWAYS,
+    # Multi-instance mode settings
+    MULTI_INSTANCE_MODE, MAX_POSITIONS_PER_SYMBOL
 )
 
 logger = logging.getLogger(__name__)
@@ -163,18 +165,29 @@ class RiskManager:
         
     def should_open_position(self, symbol):
         """Check if a new position should be opened based on risk rules"""
-        # Check if we already have an open position
+        # Check if we already have an open position for this symbol
         position_info = self.binance_client.get_position_info(symbol)
         if position_info and abs(position_info['position_amount']) > 0:
             logger.info(f"Already have an open position for {symbol}")
             return False
             
-        # Check maximum number of open positions
-        positions = self.binance_client.client.futures_position_information()
-        open_positions = [p for p in positions if float(p['positionAmt']) != 0]
-        if len(open_positions) >= MAX_OPEN_POSITIONS:
-            logger.info(f"Maximum number of open positions ({MAX_OPEN_POSITIONS}) reached")
-            return False
+        # Check maximum number of open positions (only for the current trading symbol)
+        # This allows separate bot instances for different trading pairs to operate independently
+        if MULTI_INSTANCE_MODE:
+            # In multi-instance mode, only count positions for the current symbol
+            positions = self.binance_client.client.futures_position_information()
+            # Check if we've reached the max positions for this symbol
+            symbol_positions = [p for p in positions if p['symbol'] == symbol and float(p['positionAmt']) != 0]
+            if len(symbol_positions) >= MAX_POSITIONS_PER_SYMBOL:
+                logger.info(f"Maximum number of positions for {symbol} ({MAX_POSITIONS_PER_SYMBOL}) reached")
+                return False
+        else:
+            # Original behavior - count all positions
+            positions = self.binance_client.client.futures_position_information()
+            open_positions = [p for p in positions if float(p['positionAmt']) != 0]
+            if len(open_positions) >= MAX_OPEN_POSITIONS:
+                logger.info(f"Maximum number of open positions ({MAX_OPEN_POSITIONS}) reached")
+                return False
             
         return True
         
@@ -254,9 +267,16 @@ class RiskManager:
             return None
             
         if not position_info:
+            # Get position info specifically for this symbol (important for multi-instance mode)
             position_info = self.binance_client.get_position_info(symbol)
             
+        # Only proceed if we have a valid position for this specific symbol
         if not position_info or abs(position_info['position_amount']) == 0:
+            return None
+            
+        # Ensure we're dealing with the right symbol in multi-instance mode
+        if position_info['symbol'] != symbol:
+            logger.warning(f"Position symbol mismatch: expected {symbol}, got {position_info['symbol']}")
             return None
             
         entry_price = position_info['entry_price']
@@ -343,13 +363,16 @@ class RiskManager:
             current_take_profit = current_price * (1 + trailing_take_profit_pct)
             current_take_profit = math.floor(current_take_profit * 10**price_precision) / 10**price_precision
             
-            # Check if there are open orders
+            # Check if there are open orders specifically for this symbol
             open_orders = self.binance_client.client.futures_get_open_orders(symbol=symbol)
             
-            # Find the current take profit order if it exists
+            # Find the current take profit order if it exists - only for this specific symbol
+            # This is crucial for multi-instance mode to prevent conflicts between different trading pairs
             existing_take_profit = None
             for order in open_orders:
-                if order['type'] == 'TAKE_PROFIT_MARKET' and order['side'] == 'SELL':
+                if (order['symbol'] == symbol and 
+                    order['type'] == 'TAKE_PROFIT_MARKET' and 
+                    order['side'] == 'SELL'):
                     existing_take_profit = float(order['stopPrice'])
                     break
             
@@ -371,13 +394,16 @@ class RiskManager:
             current_take_profit = current_price * (1 - trailing_take_profit_pct)
             current_take_profit = math.ceil(current_take_profit * 10**price_precision) / 10**price_precision
             
-            # Check if there are open orders
+            # Check if there are open orders specifically for this symbol
             open_orders = self.binance_client.client.futures_get_open_orders(symbol=symbol)
             
-            # Find the current take profit order if it exists
+            # Find the current take profit order if it exists - only for this specific symbol
+            # This is crucial for multi-instance mode to prevent conflicts between different trading pairs
             existing_take_profit = None
             for order in open_orders:
-                if order['type'] == 'TAKE_PROFIT_MARKET' and order['side'] == 'BUY':
+                if (order['symbol'] == symbol and
+                    order['type'] == 'TAKE_PROFIT_MARKET' and 
+                    order['side'] == 'BUY'):
                     existing_take_profit = float(order['stopPrice'])
                     break
             

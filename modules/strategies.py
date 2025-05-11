@@ -1366,12 +1366,17 @@ class LayerDynamicGridStrategy(TradingStrategy):
 def get_strategy(strategy_name):
     """Factory function to get a strategy by name"""
     from modules.config import (
+        # LAYER parameters
         LAYER_GRID_LEVELS, LAYER_GRID_SPACING_PCT, LAYER_TREND_EMA_FAST, LAYER_TREND_EMA_SLOW,
         LAYER_VOLATILITY_LOOKBACK, RSI_PERIOD, RSI_OVERBOUGHT, RSI_OVERSOLD,
         LAYER_VOLUME_MA_PERIOD, LAYER_ADX_PERIOD, LAYER_ADX_THRESHOLD, LAYER_SIDEWAYS_THRESHOLD,
-        # LAYER specific parameters
         LAYER_VOLATILITY_MULTIPLIER, LAYER_TREND_CONDITION_MULTIPLIER,
-        LAYER_MIN_GRID_SPACING, LAYER_MAX_GRID_SPACING
+        LAYER_MIN_GRID_SPACING, LAYER_MAX_GRID_SPACING,
+        # AVAX parameters
+        AVAX_GRID_LEVELS, AVAX_GRID_SPACING_PCT, AVAX_TREND_EMA_FAST, AVAX_TREND_EMA_SLOW,
+        AVAX_VOLATILITY_LOOKBACK, AVAX_VOLUME_MA_PERIOD, AVAX_ADX_PERIOD, AVAX_ADX_THRESHOLD,
+        AVAX_SIDEWAYS_THRESHOLD, AVAX_VOLATILITY_MULTIPLIER, AVAX_TREND_CONDITION_MULTIPLIER,
+        AVAX_MIN_GRID_SPACING, AVAX_MAX_GRID_SPACING
     )
     
     strategies = {
@@ -1393,6 +1398,25 @@ def get_strategy(strategy_name):
             trend_condition_multiplier=LAYER_TREND_CONDITION_MULTIPLIER,
             min_grid_spacing=LAYER_MIN_GRID_SPACING,
             max_grid_spacing=LAYER_MAX_GRID_SPACING
+        ),
+        'AvaxDynamicGrid': AvaxDynamicGridStrategy(
+            grid_levels=AVAX_GRID_LEVELS,
+            grid_spacing_pct=AVAX_GRID_SPACING_PCT,
+            trend_ema_fast=AVAX_TREND_EMA_FAST,
+            trend_ema_slow=AVAX_TREND_EMA_SLOW,
+            volatility_lookback=AVAX_VOLATILITY_LOOKBACK,
+            rsi_period=RSI_PERIOD,
+            rsi_overbought=RSI_OVERBOUGHT,
+            rsi_oversold=RSI_OVERSOLD,
+            volume_ma_period=AVAX_VOLUME_MA_PERIOD,
+            adx_period=AVAX_ADX_PERIOD,
+            adx_threshold=AVAX_ADX_THRESHOLD,
+            sideways_threshold=AVAX_SIDEWAYS_THRESHOLD,
+            # Pass AVAX specific parameters
+            volatility_multiplier=AVAX_VOLATILITY_MULTIPLIER,
+            trend_condition_multiplier=AVAX_TREND_CONDITION_MULTIPLIER,
+            min_grid_spacing=AVAX_MIN_GRID_SPACING,
+            max_grid_spacing=AVAX_MAX_GRID_SPACING
         )
     }
     
@@ -1411,7 +1435,8 @@ def get_strategy_for_symbol(symbol, strategy_name=None):
     
     # Default strategies based on symbol
     symbol_strategies = {
-        'LAYERUSDT': LayerDynamicGridStrategy()
+        'LAYERUSDT': LayerDynamicGridStrategy(),
+        'AVAXUSDT': AvaxDynamicGridStrategy()
     }
     
     if symbol in symbol_strategies:
@@ -1419,3 +1444,256 @@ def get_strategy_for_symbol(symbol, strategy_name=None):
     
     # Default to base strategy
     return TradingStrategy(symbol)
+
+class AvaxDynamicGridStrategy(LayerDynamicGridStrategy):
+    """
+    Dynamic Grid Trading Strategy for AVAX that adapts to market trends
+    and different market conditions (bullish, bearish, and sideways).
+    
+    Inherits from LayerDynamicGridStrategy but includes AVAX-specific optimizations:
+    - Higher volatility handling with wider grids
+    - More responsive to market momentum
+    - Adjusted risk parameters for AVAX's price action characteristics
+    - Enhanced trend detection tailored to AVAX volatility patterns
+    
+    Features:
+    - Dynamic position sizing based on volatility and account equity
+    - Adaptive grid spacing based on market volatility
+    - Asymmetric grids biased toward the trend direction
+    - Automatic grid reset when price moves outside range
+    - Cool-off period after consecutive losses
+    - Supertrend indicator for faster trend detection
+    - VWAP for sideways markets
+    - Volume-weighted RSI for better signals
+    - Bollinger Band squeeze detection for breakouts
+    - Fibonacci level integration for support/resistance
+    - Enhanced momentum filtering and multi-indicator confirmation
+    - Sophisticated reversal detection
+    """
+    def __init__(self, 
+                 grid_levels=6,                    # More grid levels for AVAX's higher volatility
+                 grid_spacing_pct=1.5,             # Wider initial grid spacing for AVAX
+                 trend_ema_fast=7,                 # Faster trend detection for AVAX's quick movements
+                 trend_ema_slow=21,
+                 volatility_lookback=14,           # Shorter lookback to be more responsive to AVAX volatility
+                 rsi_period=14,
+                 rsi_overbought=70,
+                 rsi_oversold=30,
+                 volume_ma_period=20,
+                 adx_period=14,
+                 adx_threshold=23,                 # Lower threshold to detect trends earlier for AVAX
+                 sideways_threshold=17,            # Higher threshold for more accurate sideways detection
+                 # AVAX-specific parameters - optimized for volatility
+                 volatility_multiplier=1.2,        # Higher multiplier for AVAX's increased volatility
+                 trend_condition_multiplier=1.4,   # More aggressive in trending markets
+                 min_grid_spacing=0.8,             # Higher min spacing for AVAX
+                 max_grid_spacing=4.0,             # Higher max spacing for extreme AVAX volatility
+                 # Enhanced features - all implemented with AVAX-specific tweaks
+                 supertrend_period=10,             # For faster trend detection
+                 supertrend_multiplier=3.0,
+                 fibonacci_levels=[0.236, 0.382, 0.5, 0.618, 0.786],  # For support/resistance
+                 squeeze_threshold=0.5,            # For breakout detection
+                 cooloff_period=3,                 # Cool-off after losses
+                 max_consecutive_losses=2):
+        
+        # Initialize with AVAX-specific parameters
+        super().__init__(
+            grid_levels=grid_levels,
+            grid_spacing_pct=grid_spacing_pct,
+            trend_ema_fast=trend_ema_fast,
+            trend_ema_slow=trend_ema_slow,
+            volatility_lookback=volatility_lookback,
+            rsi_period=rsi_period,
+            rsi_overbought=rsi_overbought,
+            rsi_oversold=rsi_oversold,
+            volume_ma_period=volume_ma_period,
+            adx_period=adx_period,
+            adx_threshold=adx_threshold,
+            sideways_threshold=sideways_threshold,
+            volatility_multiplier=volatility_multiplier,
+            trend_condition_multiplier=trend_condition_multiplier,
+            min_grid_spacing=min_grid_spacing,
+            max_grid_spacing=max_grid_spacing,
+            supertrend_period=supertrend_period,
+            supertrend_multiplier=supertrend_multiplier,
+            fibonacci_levels=fibonacci_levels,
+            squeeze_threshold=squeeze_threshold,
+            cooloff_period=cooloff_period,
+            max_consecutive_losses=max_consecutive_losses
+        )
+        
+        # Override strategy name
+        self.strategy_name = 'AvaxDynamicGrid'
+    
+    def classify_market_condition(self, df):
+        """
+        AVAX-specific market condition classification - slightly more sensitive to volatility
+        
+        This method implements enhanced market condition detection specially tuned for AVAX:
+        - More sensitive trend detection thresholds (uses 0.9x ADX threshold)
+        - Different RSI thresholds (48 for bullish, 52 for bearish) to adapt to AVAX's characteristics
+        - Special multipliers for extreme trend detection (1.4x)
+        - Custom squeeze threshold (0.9x) for AVAX's explosive breakouts
+        """
+        conditions = []
+        
+        for i in range(len(df)):
+            if i < self.adx_period:
+                conditions.append('SIDEWAYS')  # Default for initial rows
+                continue
+                
+            # Get relevant indicators
+            adx = df['adx'].iloc[i]
+            di_plus = df['di_plus'].iloc[i]
+            di_minus = df['di_minus'].iloc[i]
+            rsi = df['rsi'].iloc[i]
+            bb_width = df['bb_width'].iloc[i]
+            supertrend_dir = df['supertrend_direction'].iloc[i] if i >= self.supertrend_period else 0
+            macd_crossover = df['macd_crossover'].iloc[i] if 'macd_crossover' in df else 0
+            
+            # AVAX-specific: Check for squeeze condition with adjusted threshold
+            # AVAX tends to have more explosive breakouts after consolidation
+            is_squeeze = bb_width < self.squeeze_threshold * 0.9
+            
+            # Enhanced condition classification with multi-indicator confirmation
+            # AVAX-specific market condition detection logic
+            
+            # Strong bullish trend confirmation - more sensitive for AVAX
+            if (adx > self.adx_threshold * 0.9 and 
+                di_plus > di_minus and 
+                supertrend_dir > 0 and
+                (rsi > 48 or macd_crossover > 0)):  # Lower RSI threshold for AVAX
+                conditions.append('BULLISH')
+                
+            # Strong bearish trend confirmation - more sensitive for AVAX
+            elif (adx > self.adx_threshold * 0.9 and 
+                  di_minus > di_plus and 
+                  supertrend_dir < 0 and
+                  (rsi < 52 or macd_crossover < 0)):  # Higher RSI threshold for AVAX
+                conditions.append('BEARISH')
+                
+            # Extreme bullish trend - AVAX specific thresholds
+            elif (adx > self.adx_threshold * 1.4 and 
+                  di_plus > di_minus * 1.4 and 
+                  supertrend_dir > 0):
+                conditions.append('EXTREME_BULLISH')
+                
+            # Extreme bearish trend - AVAX specific thresholds
+            elif (adx > self.adx_threshold * 1.4 and 
+                  di_minus > di_plus * 1.4 and 
+                  supertrend_dir < 0):
+                conditions.append('EXTREME_BEARISH')
+                
+            # Squeeze condition (potential breakout) - AVAX specific
+            elif is_squeeze:
+                conditions.append('SQUEEZE')
+                
+            # Weak trend or consolidation
+            elif adx < self.sideways_threshold:
+                conditions.append('SIDEWAYS')
+                
+            # Moderate bullish trend
+            elif di_plus > di_minus and supertrend_dir > 0:
+                conditions.append('BULLISH')
+                
+            # Moderate bearish trend
+            elif di_minus > di_plus and supertrend_dir < 0:
+                conditions.append('BEARISH')
+                
+            # Default to sideways if no clear condition
+            else:
+                conditions.append('SIDEWAYS')
+        
+        return pd.Series(conditions, index=df.index)
+    
+    def calculate_grid_spacing(self, df):
+        """
+        AVAX-optimized dynamic grid spacing calculation with higher volatility handling
+        
+        Implements adaptive grid spacing features specifically for AVAX:
+        - Uses a 1.05 multiplier for ATR percentage (higher volatility adjustment)
+        - Special BB width multiplier scaling (5.5x) optimized for AVAX's wider bands
+        - Custom condition multipliers for different market states:
+          * 0.85x for sideways (tighter grids)
+          * 1.6x for extreme trends (wider grids)
+          * 1.3x for squeeze conditions (anticipating stronger breakouts)
+        - Higher min/max grid spacing thresholds (0.8-4.0 vs 0.6-3.5 for LAYER)
+        """
+        try:
+            # Get the latest row
+            latest = df.iloc[-1]
+            
+            # Base grid spacing on ATR percentage - AVAX specific adjustment
+            base_spacing = latest['atr_pct'] * self.volatility_multiplier * 1.05
+            
+            # Adjust based on Bollinger Band width (volatility scaling)
+            # AVAX typically has wider BB bands during volatility
+            bb_multiplier = min(max(latest['bb_width'] * 5.5, 0.6), 3.8)
+            
+            # Adjust based on market condition
+            market_condition = latest['market_condition']
+            if market_condition == 'SIDEWAYS':
+                # Tighter grid spacing in sideways markets - AVAX adjusted
+                condition_multiplier = 0.85
+            elif market_condition in ['BULLISH', 'BEARISH']:
+                # Wider grid spacing in trending markets
+                condition_multiplier = self.trend_condition_multiplier
+            elif market_condition in ['EXTREME_BULLISH', 'EXTREME_BEARISH']:
+                # Even wider spacing in extreme trends - AVAX is more volatile
+                condition_multiplier = self.trend_condition_multiplier * 1.6
+            elif market_condition == 'SQUEEZE':
+                # Prepare for potential breakout with wider spacing - AVAX breakouts can be stronger
+                condition_multiplier = self.trend_condition_multiplier * 1.3
+            else:
+                condition_multiplier = 1.0
+            
+            # Calculate final grid spacing
+            dynamic_spacing = base_spacing * bb_multiplier * condition_multiplier
+            
+            # Ensure minimum and maximum spacing
+            return min(max(dynamic_spacing, self.min_grid_spacing), self.max_grid_spacing)
+            
+        except Exception as e:
+            logger.error(f"Error calculating grid spacing for AVAX: {e}")
+            # Return default spacing in case of error
+            return self.grid_spacing_pct
+            
+    def get_extreme_market_signal(self, df):
+        """
+        AVAX-specialized signal generation for extreme market conditions
+        AVAX tends to have more pronounced extreme moves
+        
+        Implements enhanced signal detection for AVAX's extreme markets:
+        - Custom thresholds for dip buying (VWAP * 1.01, RSI < 42)
+        - Custom thresholds for rally selling (VWAP * 0.99, RSI > 58)
+        - Uses Supertrend confirmation for more reliable signals
+        - Adjusts RSI thresholds specifically for AVAX's characteristics
+        - Part of the sophisticated multi-indicator confirmation system
+        """
+        if len(df) < 3:
+            return None
+            
+        latest = df.iloc[-1]
+        market_condition = latest['market_condition']
+        
+        # Only process if we're in extreme market conditions
+        if market_condition not in ['EXTREME_BULLISH', 'EXTREME_BEARISH']:
+            return None
+            
+        # In extreme bullish market
+        if market_condition == 'EXTREME_BULLISH':
+            # Look for buying opportunities on small dips - AVAX adjusted
+            if (latest['close'] < latest['vwap'] * 1.01 and 
+                latest['supertrend_direction'] == 1 and
+                latest['rsi'] < 42):  # Slightly higher RSI threshold for AVAX
+                return 'BUY'
+                
+        # In extreme bearish market
+        elif market_condition == 'EXTREME_BEARISH':
+            # Look for selling opportunities on small rallies - AVAX adjusted
+            if (latest['close'] > latest['vwap'] * 0.99 and 
+                latest['supertrend_direction'] == -1 and
+                latest['rsi'] > 58):  # Slightly lower RSI threshold for AVAX
+                return 'SELL'
+                
+        return None

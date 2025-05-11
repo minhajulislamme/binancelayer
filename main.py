@@ -22,6 +22,7 @@ from modules.config import (
     TRADING_SYMBOL, TIMEFRAME, STRATEGY, LOG_LEVEL,
     USE_TELEGRAM, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID,
     SEND_DAILY_REPORT, DAILY_REPORT_TIME, AUTO_COMPOUND,
+    MULTI_INSTANCE_MODE, MAX_POSITIONS_PER_SYMBOL,
     # Add these to your config.py:
     # BACKTEST_BEFORE_LIVE = True
     # BACKTEST_MIN_PROFIT_PCT = 5.0
@@ -58,6 +59,20 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger(__name__)
+
+def test_strategies():
+    """Test loading the strategies"""
+    from modules.strategies import get_strategy
+    
+    # Test LAYER strategy
+    layer_strategy = get_strategy('LayerDynamicGrid')
+    logger.info(f"Loaded strategy: {layer_strategy.strategy_name}")
+    
+    # Test AVAX strategy
+    avax_strategy = get_strategy('AvaxDynamicGrid')
+    logger.info(f"Loaded strategy: {avax_strategy.strategy_name}")
+    
+    return layer_strategy, avax_strategy
 
 # Global variables
 running = True
@@ -688,6 +703,11 @@ def check_for_signals(symbol=None):
     if not symbol:
         symbol = TRADING_SYMBOL
     
+    # In multi-instance mode, ensure we only process signals for our designated symbol
+    if MULTI_INSTANCE_MODE and symbol != TRADING_SYMBOL:
+        logger.warning(f"Ignoring signal check for {symbol} - this instance is dedicated to {TRADING_SYMBOL}")
+        return
+    
     if not new_candle_received.get(symbol, False):
         return
     
@@ -937,27 +957,28 @@ def check_for_signals(symbol=None):
                 else:
                     logger.error("❌ Failed to place SELL order to open position")
         
-        # Handle trailing stops and take profits for existing positions
-        if position and abs(position['position_amount']) > 0:
+        # Handle trailing stops and take profits for existing positions - for current symbol only in multi-instance mode
+        if position and abs(position['position_amount']) > 0 and position['symbol'] == symbol:
             position_side = "LONG" if position['position_amount'] > 0 else "SHORT"
-            logger.info(f"Managing existing {position_side} position with size {abs(position['position_amount'])}, received {signal} signal")
+            logger.info(f"Managing existing {position_side} position for {symbol} with size {abs(position['position_amount'])}, received {signal} signal")
             
             side = "BUY" if position['position_amount'] > 0 else "SELL"
             opposite_side = "SELL" if side == "BUY" else "BUY"
             
+            # Calculate trailing stop-loss specifically for this symbol
             new_stop = risk_manager.adjust_stop_loss_for_trailing(
                 symbol, side, current_price, position
             )
             
-            # Add trailing take profit functionality
+            # Calculate trailing take-profit specifically for this symbol
             new_take_profit = risk_manager.adjust_take_profit_for_trailing(
                 symbol, side, current_price, position
             )
             
             # If either stop loss or take profit needs updating
             if new_stop or new_take_profit:
-                # Cancel all existing orders first
-                binance_client.cancel_all_open_orders(symbol)
+                # Only cancel orders for this specific symbol - critical for multi-instance mode
+                binance_client.cancel_position_orders(symbol)  # Use cancel_position_orders instead of cancel_all_open_orders
                 time.sleep(0.5)  # Small delay to ensure orders are cancelled
                 
                 # Always place new stop loss
@@ -1811,6 +1832,25 @@ def place_partial_take_profits(symbol, side, quantity, entry_price, position_inf
         List of placed take profit orders
     """
     logger.info(f"Setting up partial take profits for {symbol}")
+    
+    # First, cancel any existing take profit orders for this symbol to avoid conflicts
+    # This ensures each bot instance manages its own orders without interference
+    try:
+        # Get existing TP orders
+        existing_orders = binance_client.get_open_orders(symbol)
+        for order in existing_orders:
+            if (order.get('type') in ['TAKE_PROFIT_MARKET', 'TAKE_PROFIT'] and 
+                order.get('symbol') == symbol):
+                try:
+                    binance_client.client.futures_cancel_order(
+                        symbol=symbol, 
+                        orderId=order.get('orderId')
+                    )
+                    logger.info(f"Cancelled existing TP order {order.get('orderId')} for {symbol}")
+                except Exception as e:
+                    logger.warning(f"Error cancelling existing TP order: {e}")
+    except Exception as e:
+        logger.warning(f"Error checking existing TP orders: {e}")
     
     # Get partial take profit levels
     take_profit_levels = risk_manager.calculate_partial_take_profits(symbol, side, entry_price)
